@@ -159,6 +159,8 @@
   // next click — and a selection is a thing you are doing, not a place you are.
   let selection: MeetingSelection = EMPTY_SELECTION;
   let prepareOpen = false;
+  // The Connect an agent panel (D-813), opened from the rooms rail's footer.
+  let agentOpen = false;
   // The floating bar's real height, so the list can leave exactly that much
   // room under its last row.
   let selectionDockHeight = 0;
@@ -177,10 +179,12 @@
   // into view, not a thing over it, and the tabs stay usable while it is open.
   $: overlayOpen = prepareOpen || tagManagerOpen || Boolean(selectedInsight || selectedMeetingId);
   // Which layer is on top, in the order they stack: the meeting sheet, then
-  // Prepare, then the rooms drawer (only ever open on a phone), then Manage
-  // tags. Everything under it is inert, so neither Tab nor a screen reader
-  // wanders into a page the reader cannot see for the drawer over it.
-  $: topLayer = deleteConfirm ? 5 : tagManagerOpen ? 4 : railOpen ? 3 : prepareOpen ? 2 : selectedInsight || selectedMeetingId ? 1 : 0;
+  // Prepare or Connect an agent, then the rooms drawer (only ever open on a
+  // phone), then Manage tags. Everything under it is inert, so neither Tab nor
+  // a screen reader wanders into a page the reader cannot see for the drawer
+  // over it. Prepare and Connect an agent share a level: each is opened from a
+  // control the other makes inert, so they are never open together.
+  $: topLayer = deleteConfirm ? 5 : tagManagerOpen ? 4 : railOpen ? 3 : prepareOpen || agentOpen ? 2 : selectedInsight || selectedMeetingId ? 1 : 0;
   $: dispatch("overlay", overlayOpen);
   $: if (prepareOpen) {
     dispatch("prepareOpen");
@@ -552,6 +556,10 @@
       prepareOpen = false;
       return;
     }
+    if (agentOpen) {
+      agentOpen = false;
+      return;
+    }
     if (selectedInsightId || selectedMeetingId) {
       closeSheet();
     }
@@ -571,6 +579,10 @@
     }
     if (prepareOpen) {
       prepareOpen = false;
+      return;
+    }
+    if (agentOpen) {
+      agentOpen = false;
       return;
     }
     if (selectedInsightId || selectedMeetingId) {
@@ -1301,22 +1313,21 @@
   // Which half of Browse the right-hand pane shows. The Import tab is a
   // persistent workbench, not an overlay: Escape and the layer bookkeeping are
   // untouched by it.
-  let browseTab: "meetings" | "import" | "agent" = "meetings";
+  let browseTab: "meetings" | "import" = "meetings";
   // True while imports are staging or running server-side — the dot on the tab
   // label, reported by the panel (which stays mounted so the dot is honest
   // before the tab is first opened).
   let importActivity = false;
-  $: if (!importsOffered && browseTab === "import") {
+  $: if (!importsOffered) {
     browseTab = "meetings";
   }
   // "Connect an agent" (D-813) exists only where a provider knows the MCP
-  // endpoint: the in-Nextcloud build. Same rule as Import — no tab at all
+  // endpoint: the in-Nextcloud build. Same rule as Import — no way in at all
   // rather than instructions that cannot work.
   $: agentConnection = typeof dataProvider.agentConnection === "function" ? dataProvider.agentConnection() : null;
-  $: if (!agentConnection && browseTab === "agent") {
-    browseTab = "meetings";
+  $: if (!agentConnection) {
+    agentOpen = false;
   }
-  $: browseTabsOffered = importsOffered || agentConnection !== null;
   // Which kinds the browse list is showing. Owned here rather than in the list
   // because the control that changes it is in the rail: two components reading
   // one filter cannot each keep their own copy of it.
@@ -1533,8 +1544,8 @@
     />
   </div>
 {:else}
-  <div class="browse-shell" class:with-tabs={browseTabsOffered}>
-    {#if browseTabsOffered}
+  <div class="browse-shell" class:with-tabs={importsOffered}>
+    {#if importsOffered}
       <!-- Second-level tabs, visually subordinate to the shell's Browse/Operator
            nav above. A segmented control rather than another nav bar. -->
       <div class="browse-tabs" inert={topLayer > 0} role="tablist" aria-label="Browse sections">
@@ -1546,29 +1557,17 @@
           aria-selected={browseTab === "meetings"}
           on:click={() => (browseTab = "meetings")}
         >Meetings</button>
-        {#if importsOffered}
-          <button
-            type="button"
-            role="tab"
-            class="browse-tab"
-            class:active={browseTab === "import"}
-            aria-selected={browseTab === "import"}
-            on:click={() => (browseTab = "import")}
-          >
-            Import
-            {#if importActivity}<span class="tab-dot" role="status" aria-label="Imports are running"></span>{/if}
-          </button>
-        {/if}
-        {#if agentConnection}
-          <button
-            type="button"
-            role="tab"
-            class="browse-tab"
-            class:active={browseTab === "agent"}
-            aria-selected={browseTab === "agent"}
-            on:click={() => (browseTab = "agent")}
-          >Connect an agent</button>
-        {/if}
+        <button
+          type="button"
+          role="tab"
+          class="browse-tab"
+          class:active={browseTab === "import"}
+          aria-selected={browseTab === "import"}
+          on:click={() => (browseTab = "import")}
+        >
+          Import
+          {#if importActivity}<span class="tab-dot" role="status" aria-label="Imports are running"></span>{/if}
+        </button>
       </div>
     {/if}
     <div class="contents" class:tab-hidden={browseTab !== "meetings"} inert={topLayer > 0 && topLayer !== 3}>
@@ -1598,6 +1597,9 @@
       on:toggleTag={(event) => toggleTagFilter(event.detail)}
       on:tagMatch={(event) => (tagMatch = event.detail)}
       on:manageTags={() => (tagManagerOpen = true)}
+      agentOffered={agentConnection !== null}
+      {agentOpen}
+      on:connectAgent={() => (agentOpen = true)}
     />
     </div>
 
@@ -1665,10 +1667,6 @@
       on:retryTag={() => annotationNotice ? meetingMarks.retry(annotationNotice.meetingId) : listTagSession.retry()}
     />
     </div>
-
-    {#if agentConnection}
-      <ConnectAgentPanel connection={agentConnection} active={browseTab === "agent"} />
-    {/if}
 
     {#if importsOffered}
       <ImportPanel
@@ -1836,6 +1834,23 @@
             <slot name="prepare-generate" {entries} onInsightCreated={handleInsightCreated} />
           </svelte:fragment>
         </PreparePanel>
+      </aside>
+    {/if}
+
+    <!-- Opened from the rail's footer (D-813). Its scrim is clear rather than
+         dimmed: the panel is a reference card read beside the list, not a step
+         that takes the page over, but a click beside it still closes it. -->
+    {#if agentOpen && agentConnection}
+      <button
+        type="button"
+        class="shell-scrim agent-scrim"
+        tabindex="-1"
+        inert={topLayer > 2}
+        aria-label="Close Connect an agent"
+        on:click={() => (agentOpen = false)}
+      ></button>
+      <aside class="agent-sheet" inert={topLayer > 2} use:focusLayer transition:sheetSlide={{}}>
+        <ConnectAgentPanel connection={agentConnection} on:close={() => (agentOpen = false)} />
       </aside>
     {/if}
 
@@ -2015,6 +2030,24 @@
     box-shadow: -8px 0 30px oklch(0% 0 0 / 0.22);
   }
 
+  /* Same level as Prepare (see topLayer), and narrower still: three steps and
+     an address. The scrim catches the click beside it without dimming. */
+  .agent-scrim {
+    z-index: 34;
+    background-color: transparent;
+  }
+  .agent-sheet {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 35;
+    width: min(400px, 100%);
+    background-color: var(--color-base-100);
+    border-left: 1px solid var(--color-base-300);
+    box-shadow: -8px 0 24px oklch(0% 0 0 / 0.12);
+  }
+
   @media (max-width: 720px) {
     /* The rail is out of flow down here (it is the drawer), so the list gets
        the whole shell rather than being squeezed beside an empty track. */
@@ -2026,7 +2059,8 @@
       left: 8px;
       right: 8px;
     }
-    .prepare-sheet {
+    .prepare-sheet,
+    .agent-sheet {
       top: auto;
       left: 0;
       right: 0;
